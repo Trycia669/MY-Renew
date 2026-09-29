@@ -1,4 +1,4 @@
-name: Auto Renew hidoha.net
+name: Hidoha Auto Renew
 
 on:
   schedule:
@@ -9,12 +9,6 @@ on:
 # 这个 workflow 放在【公开】仓库里,真正的 renew.py 放在【私有】仓库里,
 # 运行时用一个有权限的 token 把私有仓库的代码拉进来再执行,
 # 这样公开仓库里除了这份 workflow 文件本身,不会暴露任何脚本细节。
-#
-# 需要的权限:
-#   contents: write -> 用于本仓库(公开仓库)的保活提交(时间戳文件)
-#   actions:  write -> 用于清理本仓库历史 workflow 运行记录
-# 仓库 Settings -> Actions -> General -> Workflow permissions 里
-# 记得改成 "Read and write permissions",否则保活提交/清理历史会失败。
 permissions:
   contents: write
   actions: write
@@ -22,7 +16,7 @@ permissions:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: 拉取本仓库(公开仓库,只有这份 workflow 文件)
         uses: actions/checkout@v4
@@ -44,17 +38,59 @@ jobs:
           pip install -r private-script/requirements.txt
           python -m playwright install --with-deps chromium
 
+      - name: 设置代理(可选)
+        run: |
+          set -e
+          if [ -n "${{ secrets.HIDOHA_PROXY_OUTBOUND }}" ]; then
+            echo "检测到 HIDOHA_PROXY_OUTBOUND,使用 sing-box 起本地代理(支持 VLESS/Hysteria2/TUIC/Trojan/Shadowsocks 等)"
+
+            SB_VERSION="1.9.3"
+            curl -fsSL -o sing-box.tar.gz \
+              "https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-linux-amd64.tar.gz"
+            tar -xzf sing-box.tar.gz
+            SB_DIR=$(tar -tzf sing-box.tar.gz | head -1 | cut -f1 -d"/")
+            chmod +x "$SB_DIR/sing-box"
+
+            # 给用户传进来的 outbound JSON 补一个 tag,再拼成完整的 sing-box 配置
+            echo '${{ secrets.HIDOHA_PROXY_OUTBOUND }}' | jq '. + {tag:"proxy"}' > outbound.json
+            jq -n --slurpfile outbound outbound.json '{
+              log: {level: "warn"},
+              inbounds: [{type:"socks", listen:"127.0.0.1", listen_port:1080}],
+              outbounds: $outbound,
+              route: {final: "proxy"}
+            }' > singbox-config.json
+
+            nohup "./$SB_DIR/sing-box" run -c singbox-config.json > singbox.log 2>&1 &
+            sleep 3
+            echo "----- sing-box 启动日志 -----"
+            cat singbox.log || true
+            echo "HIDOHA_PROXY=socks5://127.0.0.1:1080" >> "$GITHUB_ENV"
+
+          elif [ -n "${{ secrets.HIDOHA_PROXY }}" ]; then
+            echo "使用普通 http/https/socks5 代理"
+            echo "HIDOHA_PROXY=${{ secrets.HIDOHA_PROXY }}" >> "$GITHUB_ENV"
+
+          else
+            echo "未配置代理,直接用 runner 自身出口 IP"
+          fi
+
       - name: 运行续期脚本
         working-directory: private-script
         env:
+          # 多账号模式:HIDOHA_ACCOUNTS 是一个 JSON 数组字符串,例如
+          # [{"name":"账号A","email":"a@x.com","password":"pw1","order_id":"2921"}]
+          # 配置了 HIDOHA_ACCOUNTS 就会忽略下面三个单账号变量。
+          HIDOHA_ACCOUNTS: ${{ secrets.HIDOHA_ACCOUNTS }}
+          # 单账号模式(没配 HIDOHA_ACCOUNTS 时的兼容写法):
           HIDOHA_EMAIL: ${{ secrets.HIDOHA_EMAIL }}
           HIDOHA_PASSWORD: ${{ secrets.HIDOHA_PASSWORD }}
           HIDOHA_ORDER_ID: ${{ secrets.HIDOHA_ORDER_ID }}
           HIDOHA_RENEW_THRESHOLD_DAYS: ${{ vars.HIDOHA_RENEW_THRESHOLD_DAYS }}
           HIDOHA_SUCCESS_DAYS_DELTA: ${{ vars.HIDOHA_SUCCESS_DAYS_DELTA }}
+          # HIDOHA_PROXY 不在这里写死了,由上一步"设置代理"按情况写进 GITHUB_ENV
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 这个仓库本身就是公开仓库,所以固定用 public 模式,日志/通知自动脱敏
+          # 这个仓库本身就是公开仓库,固定用 public 模式,日志/通知自动脱敏
           MODE: public
         run: python renew.py
 
@@ -75,7 +111,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          WORKFLOW_FILE="renew.yml"
+          WORKFLOW_FILE="Hidoha-renew.yml"
           CURRENT_RUN_ID="${{ github.run_id }}"
           echo "当前 run id: $CURRENT_RUN_ID,开始清理历史记录..."
           RUN_IDS=$(gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" --json databaseId --limit 100 --jq '.[].databaseId')
