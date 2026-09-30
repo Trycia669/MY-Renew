@@ -39,10 +39,25 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: 设置代理(可选)
+        env:
+          PROXY_LINK: ${{ secrets.HIDOHA_PROXY_LINK }}
+          PROXY_OUTBOUND: ${{ secrets.HIDOHA_PROXY_OUTBOUND }}
+          PROXY_SIMPLE: ${{ secrets.HIDOHA_PROXY }}
         run: |
           set -e
-          if [ -n "${{ secrets.HIDOHA_PROXY_OUTBOUND }}" ]; then
-            echo "检测到 HIDOHA_PROXY_OUTBOUND,使用 sing-box 起本地代理(支持 VLESS/Hysteria2/TUIC/Trojan/Shadowsocks 等)"
+
+          if [ -n "$PROXY_LINK" ]; then
+            echo "检测到 HIDOHA_PROXY_LINK,自动解析节点分享链接(支持 hysteria2/vless/tuic/trojan/ss)"
+            python3 convert_proxy_link.py "$PROXY_LINK" > outbound_raw.json
+            jq '. + {tag:"proxy"}' outbound_raw.json > outbound.json
+
+          elif [ -n "$PROXY_OUTBOUND" ]; then
+            echo "检测到 HIDOHA_PROXY_OUTBOUND,使用手写的 sing-box outbound JSON"
+            echo "$PROXY_OUTBOUND" | jq '. + {tag:"proxy"}' > outbound.json
+          fi
+
+          if [ -f outbound.json ]; then
+            echo "已生成 outbound 配置(不打印内容,避免在公开仓库日志里泄露密码/uuid 等信息)"
 
             SB_VERSION="1.9.3"
             curl -fsSL -o sing-box.tar.gz \
@@ -51,8 +66,6 @@ jobs:
             SB_DIR=$(tar -tzf sing-box.tar.gz | head -1 | cut -f1 -d"/")
             chmod +x "$SB_DIR/sing-box"
 
-            # 给用户传进来的 outbound JSON 补一个 tag,再拼成完整的 sing-box 配置
-            echo '${{ secrets.HIDOHA_PROXY_OUTBOUND }}' | jq '. + {tag:"proxy"}' > outbound.json
             jq -n --slurpfile outbound outbound.json '{
               log: {level: "warn"},
               inbounds: [{type:"socks", listen:"127.0.0.1", listen_port:1080}],
@@ -61,14 +74,19 @@ jobs:
             }' > singbox-config.json
 
             nohup "./$SB_DIR/sing-box" run -c singbox-config.json > singbox.log 2>&1 &
+            SB_PID=$!
             sleep 3
-            echo "----- sing-box 启动日志 -----"
-            cat singbox.log || true
+            if kill -0 "$SB_PID" 2>/dev/null; then
+              echo "sing-box 已启动(pid=$SB_PID),本地 socks5 端口 1080 就绪"
+            else
+              echo "❌ sing-box 启动失败,请检查 outbound 配置是否正确(不打印日志详情,避免泄露服务器信息;需要排查的话去掉这里的保护自行临时开启)"
+              exit 1
+            fi
             echo "HIDOHA_PROXY=socks5://127.0.0.1:1080" >> "$GITHUB_ENV"
 
-          elif [ -n "${{ secrets.HIDOHA_PROXY }}" ]; then
+          elif [ -n "$PROXY_SIMPLE" ]; then
             echo "使用普通 http/https/socks5 代理"
-            echo "HIDOHA_PROXY=${{ secrets.HIDOHA_PROXY }}" >> "$GITHUB_ENV"
+            echo "HIDOHA_PROXY=$PROXY_SIMPLE" >> "$GITHUB_ENV"
 
           else
             echo "未配置代理,直接用 runner 自身出口 IP"
