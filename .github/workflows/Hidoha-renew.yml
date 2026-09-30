@@ -44,7 +44,18 @@ jobs:
           PROXY_OUTBOUND: ${{ secrets.HIDOHA_PROXY_OUTBOUND }}
           PROXY_SIMPLE: ${{ secrets.HIDOHA_PROXY }}
           HIDOHA_DEBUG: ${{ vars.HIDOHA_DEBUG }}
-        run: python3 private-script/setup_proxy.py
+        run: |
+          if [ -n "$PROXY_LINK" ] || [ -n "$PROXY_OUTBOUND" ]; then
+            # 解析/下载/启动/自检任一步失败都会非零退出,这里就不会往下写 HIDOHA_PROXY
+            python3 private-script/setup_proxy.py
+            echo "HIDOHA_PROXY=socks5://127.0.0.1:1080" >> "$GITHUB_ENV"
+          elif [ -n "$PROXY_SIMPLE" ]; then
+            echo "使用普通 http/https/socks5 代理"
+            echo "HIDOHA_PROXY=$PROXY_SIMPLE" >> "$GITHUB_ENV"
+          else
+            echo "⚠️ 未配置任何代理(HIDOHA_PROXY_LINK / HIDOHA_PROXY_OUTBOUND / HIDOHA_PROXY 都为空),将用 runner 自身出口 IP 直连"
+            echo "   机房 IP 直连很容易被站点 Cloudflare 验证拦截,建议在 Secrets 里配置 HIDOHA_PROXY_LINK"
+          fi
 
       - name: 运行续期脚本
         working-directory: private-script
