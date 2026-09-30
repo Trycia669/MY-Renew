@@ -43,6 +43,7 @@ jobs:
           PROXY_LINK: ${{ secrets.HIDOHA_PROXY_LINK }}
           PROXY_OUTBOUND: ${{ secrets.HIDOHA_PROXY_OUTBOUND }}
           PROXY_SIMPLE: ${{ secrets.HIDOHA_PROXY }}
+          HIDOHA_DEBUG: ${{ vars.HIDOHA_DEBUG }}
         run: |
           set -e
 
@@ -66,8 +67,10 @@ jobs:
             SB_DIR=$(tar -tzf sing-box.tar.gz | head -1 | cut -f1 -d"/")
             chmod +x "$SB_DIR/sing-box"
 
-            jq -n --slurpfile outbound outbound.json '{
-              log: {level: "warn"},
+            LOG_LEVEL="warn"
+            if [ "$HIDOHA_DEBUG" = "1" ]; then LOG_LEVEL="info"; fi
+            jq -n --slurpfile outbound outbound.json --arg level "$LOG_LEVEL" '{
+              log: {level: $level},
               inbounds: [{type:"socks", listen:"127.0.0.1", listen_port:1080}],
               outbounds: $outbound,
               route: {final: "proxy"}
@@ -81,6 +84,26 @@ jobs:
             else
               echo "❌ sing-box 启动失败,请检查 outbound 配置是否正确(不打印日志详情,避免泄露服务器信息;需要排查的话去掉这里的保护自行临时开启)"
               exit 1
+            fi
+
+            echo "开始代理出口自检(确认节点本身能不能出网)..."
+            if curl -x socks5h://127.0.0.1:1080 -sS -o /dev/null --max-time 25 https://www.gstatic.com/generate_204; then
+              echo "✅ 代理出口自检通过,节点可访问外网"
+            else
+              echo "❌ 代理出口自检失败:节点出不了网,续期无法通过代理进行"
+              echo "   常见原因:① 节点链接缺 insecure=1(带 pinSHA256 的自签证书节点必须加) ② 节点已失效/参数不对 ③ 机场限制 UDP 或该端口"
+              if [ "$HIDOHA_DEBUG" = "1" ]; then
+                echo "===== DEBUG 模式:singbox.log 最近 50 行(可能包含节点地址,截图/分享前注意打码) ====="
+                tail -n 50 singbox.log || true
+              else
+                echo "   (排查提示:在仓库 Variables 里添加 HIDOHA_DEBUG=1 再跑一次,会打印 sing-box 日志定位具体原因)"
+              fi
+              exit 1
+            fi
+            if curl -x socks5h://127.0.0.1:1080 -sS -o /dev/null --max-time 25 https://www.hidoha.net/; then
+              echo "✅ hidoha.net 经代理可达"
+            else
+              echo "⚠️ 节点出口可用,但 hidoha.net 经代理不可达(站点可能限制该出口 IP),仍会继续尝试续期"
             fi
             echo "HIDOHA_PROXY=socks5://127.0.0.1:1080" >> "$GITHUB_ENV"
 
