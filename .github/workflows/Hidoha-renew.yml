@@ -48,7 +48,7 @@ jobs:
 
           if [ -n "$PROXY_LINK" ]; then
             echo "检测到 HIDOHA_PROXY_LINK,自动解析节点分享链接(支持 hysteria2/vless/tuic/trojan/ss)"
-            python3 convert_proxy_link.py "$PROXY_LINK" > outbound_raw.json
+            python3 private-script/convert_proxy_link.py "$PROXY_LINK" > outbound_raw.json
             jq '. + {tag:"proxy"}' outbound_raw.json > outbound.json
 
           elif [ -n "$PROXY_OUTBOUND" ]; then
