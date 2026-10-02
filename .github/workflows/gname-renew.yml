@@ -2,9 +2,14 @@ name: gname-auto-renew
 
 # 本文件放在【公开库】，代码在【私有库】：
 #   - 公开库 Actions 免费时长不限（私有库每月仅 2000 分钟）
-#   - 公开库只需配置 Secrets：GNAME_COOKIES（多账号，推荐）或 GNAME_COOKIE、
+#   - 公开库只需配置 Secrets：GNAME_ACCOUNTS（多行「邮箱:密码」）、
 #     PRIVATE_REPO_TOKEN（可含 GNAME_PROXY）
-#   - 脚本本体、Cookie 文件、各账号休眠状态 state.json 全部留在私库
+#   - 脚本本体与各账号休眠状态 state.json 留在私库
+#
+# ⚠️ 重要：Gname 登录需要人工输入图片验证码（且风控可能追加滑块），
+#    无人值守的 Actions 无法完成登录，定时任务里的正式续期会失败。
+#    密码登录模式建议在本地/家宽设备运行；Actions 适合 --dry-run 观察
+#    或在休眠期内跳过。详见私库 README「无人值守限制」章节。
 
 on:
   schedule:
@@ -62,10 +67,8 @@ jobs:
 
       - name: Run auto renew
         env:
-          # 多账号（推荐）：多行文本，每行「名称: Cookie」，# 开头为注释；与 GNAME_COOKIE 二选一即可
-          GNAME_COOKIES: ${{ secrets.GNAME_COOKIES }}
-          # 旧版单账号写法，仍兼容：
-          GNAME_COOKIE: ${{ secrets.GNAME_COOKIE }}
+          # 多账号（每行「邮箱:密码」或「名称:邮箱:密码」，# 为注释；密码可含冒号）
+          GNAME_ACCOUNTS: ${{ secrets.GNAME_ACCOUNTS }}
           GNAME_PROXY: ${{ secrets.GNAME_PROXY }}
           # 按需覆盖：
           # GNAME_DAYS_BEFORE: "90"
