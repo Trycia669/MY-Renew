@@ -1,0 +1,87 @@
+name: gname-auto-renew
+
+# 本文件放在【公开库】，代码在【私有库】：
+#   - 公开库 Actions 免费时长不限（私有库每月仅 2000 分钟）
+#   - 公开库只需配置 Secrets：GNAME_COOKIE、PRIVATE_REPO_TOKEN（可含 GNAME_PROXY）
+#   - 脚本本体、Cookie 文件、休眠状态 state.json 全部留在私库
+
+on:
+  schedule:
+    # 每天 UTC 01:17（北京时间 09:17）触发；脚本自身有 60 天休眠控制，
+    # 休眠期内会直接跳过，不会请求 Gname
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "干跑模式（只查询不提交续期）"
+        type: boolean
+        required: false
+        default: false
+      force:
+        description: "跳过 60 天休眠，立即执行"
+        type: boolean
+        required: false
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: gname-auto-renew
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout private script repo
+        uses: actions/checkout@v4
+        with:
+          repository: YOUR_USERNAME/gname-renew-private   # ← 改成你的私库（用户名/仓库名）
+          ref: main
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}        # PAT：需该私库 Contents 读写权限
+          path: script
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 可选：如用 hysteria2/tuic 家宽代理，先安装官方客户端并后台启动。
+      # 需要：secrets 里配置 GNAME_PROXY（代理链接），并放开下面两段注释。
+      # - name: Generate proxy client config
+      #   run: python script/gname_auto_renew.py --gen-config --proxy "$GNAME_PROXY"
+      #   env:
+      #     GNAME_PROXY: ${{ secrets.GNAME_PROXY }}
+      # - name: Start hysteria2 client
+      #   run: |
+      #     curl -sSfL https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -o /usr/local/bin/hysteria
+      #     chmod +x /usr/local/bin/hysteria
+      #     nohup hysteria client -c script/hysteria2_client.json >/dev/null 2>&1 &
+
+      - name: Run auto renew
+        env:
+          GNAME_COOKIE: ${{ secrets.GNAME_COOKIE }}
+          GNAME_PROXY: ${{ secrets.GNAME_PROXY }}
+          # 按需覆盖：
+          # GNAME_DAYS_BEFORE: "90"
+          # GNAME_SLEEP_DAYS: "60"
+          # GNAME_SUFFIXES: "eu.cc"
+          # GNAME_DOMAINS: "a.eu.cc,b.eu.cc"
+        run: |
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="--dry-run"; fi
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          python script/gname_auto_renew.py $ARGS
+
+      - name: Persist hibernation state
+        if: success()
+        working-directory: script
+        run: |
+          if [ -f state.json ] && [ -n "$(git status --porcelain state.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: renew hibernation state [skip ci]"
+            git push
+          fi
