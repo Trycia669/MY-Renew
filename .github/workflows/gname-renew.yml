@@ -2,8 +2,9 @@ name: gname-auto-renew
 
 # 本文件放在【公开库】，代码在【私有库】：
 #   - 公开库 Actions 免费时长不限（私有库每月仅 2000 分钟）
-#   - 公开库只需配置 Secrets：GNAME_COOKIE、PRIVATE_REPO_TOKEN（可含 GNAME_PROXY）
-#   - 脚本本体、Cookie 文件、休眠状态 state.json 全部留在私库
+#   - 公开库只需配置 Secrets：GNAME_COOKIES（多账号，推荐）或 GNAME_COOKIE、
+#     PRIVATE_REPO_TOKEN（可含 GNAME_PROXY）
+#   - 脚本本体、Cookie 文件、各账号休眠状态 state.json 全部留在私库
 
 on:
   schedule:
@@ -61,11 +62,15 @@ jobs:
 
       - name: Run auto renew
         env:
+          # 多账号（推荐）：多行文本，每行「名称: Cookie」，# 开头为注释；与 GNAME_COOKIE 二选一即可
+          GNAME_COOKIES: ${{ secrets.GNAME_COOKIES }}
+          # 旧版单账号写法，仍兼容：
           GNAME_COOKIE: ${{ secrets.GNAME_COOKIE }}
           GNAME_PROXY: ${{ secrets.GNAME_PROXY }}
           # 按需覆盖：
           # GNAME_DAYS_BEFORE: "90"
           # GNAME_SLEEP_DAYS: "60"
+          # GNAME_ACCOUNT_DELAY: "5"
           # GNAME_SUFFIXES: "eu.cc"
           # GNAME_DOMAINS: "a.eu.cc,b.eu.cc"
         run: |
