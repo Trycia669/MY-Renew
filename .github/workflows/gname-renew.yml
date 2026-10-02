@@ -6,13 +6,16 @@ name: gname-auto-renew
 #       Variables 页：GNAME_PRIVATE_REPO  = 你的用户名/私库名（必填）
 #       Secrets  页：PRIVATE_REPO_TOKEN = 访问私库的 PAT（必填）
 #                    GNAME_ACCOUNTS     = 多行「邮箱:密码」（正式续期用）
-#                    GNAME_PROXY        = 家宽代理链接（可选）
+#                    GNAME_PROXY        = 家宽代理链接（hy2/tuic 会自动装官方客户端）
 #   - 脚本本体与各账号休眠状态 state.json 留在私库
 #
 # ⚠️ 重要：Gname 登录需要人工输入图片验证码（且风控可能追加滑块），
-#    无人值守的 Actions 无法完成登录，定时任务里的正式续期会失败。
-#    密码登录模式建议在本地/家宽设备运行；Actions 适合 --dry-run 观察
-#    或在休眠期内跳过。详见私库 README「无人值守限制」章节。
+#    无人值守的 Actions 无法完成登录。定时任务的行为：
+#      - 账号在 60 天休眠期内：直接跳过（不登录、不请求 Gname，绿色）
+#      - 休眠到期需要续期：输出 ⚠ 警告注解提醒本地执行（任务保持绿色）
+#      - 真实错误（网络/接口异常）：标红
+#    即定时任务 = "到期提醒器"；正式续期请在本地/家宽设备运行。
+#    设变量 GNAME_FAIL_ON_MANUAL=1 可让"需要人工"也标红。
 
 on:
   schedule:
@@ -68,17 +71,40 @@ jobs:
         with:
           python-version: "3.12"
 
-      # 可选：如用 hysteria2/tuic 家宽代理，先安装官方客户端并后台启动。
-      # 需要：secrets 里配置 GNAME_PROXY（代理链接），并放开下面两段注释。
-      # - name: Generate proxy client config
-      #   run: python script/gname_auto_renew.py --gen-config --proxy "$GNAME_PROXY"
-      #   env:
-      #     GNAME_PROXY: ${{ secrets.GNAME_PROXY }}
-      # - name: Start hysteria2 client
-      #   run: |
-      #     curl -sSfL https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -o /usr/local/bin/hysteria
-      #     chmod +x /usr/local/bin/hysteria
-      #     nohup hysteria client -c script/hysteria2_client.json >/dev/null 2>&1 &
+      # 家宽代理：GNAME_PROXY 为 hysteria2/hy2/tuic 链接时，自动下载官方客户端并后台
+      # 启动，脚本流量统一经 127.0.0.1:11080 的 SOCKS5 转发；socks5/http 代理无需此步；
+      # 留空则整步跳过
+      - name: Setup proxy client (hysteria2/tuic)
+        env:
+          GNAME_PROXY: ${{ secrets.GNAME_PROXY }}
+        run: |
+          if [ -z "$GNAME_PROXY" ]; then echo "未配置 GNAME_PROXY，跳过代理客户端"; exit 0; fi
+          SCHEME=$(printf '%s' "$GNAME_PROXY" | sed -n 's#^\([A-Za-z0-9]*\)://.*#\1#p' | tr 'A-Z' 'a-z')
+          python script/gname_auto_renew.py --gen-config --proxy "$GNAME_PROXY"
+          case "$SCHEME" in
+            hysteria2|hy2)
+              curl -sSfL https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64 -o /usr/local/bin/hysteria
+              chmod +x /usr/local/bin/hysteria
+              nohup hysteria client -c script/hysteria2_client.json > hysteria.log 2>&1 &
+              ;;
+            tuic)
+              URL=$(curl -s https://api.github.com/repos/EAimTY/tuic/releases/latest | grep -o 'https://[^"]*linux[^"]*musl[^"]*\.tar\.gz' | head -n1)
+              if [ -z "$URL" ]; then echo "未找到 tuic 的 Linux 包，请到 EAimTY/tuic Releases 核对资产名"; exit 1; fi
+              curl -sSfL "$URL" -o /tmp/tuic.tgz && mkdir -p /tmp/tuic && tar -xzf /tmp/tuic.tgz -C /tmp/tuic
+              BIN=$(find /tmp/tuic -type f -name 'tuic*' | head -n1)
+              if [ -z "$BIN" ]; then echo "解压后未找到 tuic 可执行文件"; exit 1; fi
+              chmod +x "$BIN" && cp "$BIN" /usr/local/bin/tuic-client
+              nohup tuic-client -c script/tuic_client.json > tuic.log 2>&1 &
+              ;;
+            *) echo "socks5/http 代理无需本地客户端"; exit 0 ;;
+          esac
+          for i in $(seq 1 30); do
+            if python -c "import socket;socket.create_connection(('127.0.0.1',11080),1)" 2>/dev/null; then
+              echo "本地 SOCKS5 127.0.0.1:11080 已就绪"; break
+            fi
+            [ "$i" = "30" ] && { echo "❌ 客户端 30 秒未就绪，日志："; tail -n 30 hysteria.log tuic.log 2>/dev/null; exit 1; }
+            sleep 1
+          done
 
       - name: Run auto renew
         env:
@@ -89,6 +115,7 @@ jobs:
           # GNAME_DAYS_BEFORE: "90"
           # GNAME_SLEEP_DAYS: "60"
           # GNAME_ACCOUNT_DELAY: "5"
+          # GNAME_FAIL_ON_MANUAL: "1"
           # GNAME_SUFFIXES: "eu.cc"
           # GNAME_DOMAINS: "a.eu.cc,b.eu.cc"
         run: |
