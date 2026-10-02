@@ -2,8 +2,11 @@ name: gname-auto-renew
 
 # 本文件放在【公开库】，代码在【私有库】：
 #   - 公开库 Actions 免费时长不限（私有库每月仅 2000 分钟）
-#   - 公开库只需配置 Secrets：GNAME_ACCOUNTS（多行「邮箱:密码」）、
-#     PRIVATE_REPO_TOKEN（可含 GNAME_PROXY）
+#   - 需要在公开库配置（Settings → Secrets and variables → Actions）：
+#       Variables 页：GNAME_PRIVATE_REPO  = 你的用户名/私库名（必填）
+#       Secrets  页：PRIVATE_REPO_TOKEN = 访问私库的 PAT（必填）
+#                    GNAME_ACCOUNTS     = 多行「邮箱:密码」（正式续期用）
+#                    GNAME_PROXY        = 家宽代理链接（可选）
 #   - 脚本本体与各账号休眠状态 state.json 留在私库
 #
 # ⚠️ 重要：Gname 登录需要人工输入图片验证码（且风控可能追加滑块），
@@ -40,12 +43,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Check config
+        run: |
+          if [ -z "${{ vars.GNAME_PRIVATE_REPO }}" ]; then
+            echo "❌ 未配置仓库变量 GNAME_PRIVATE_REPO，checkout 不知道要拉哪个私库。"
+            echo "请在公开库 Settings → Secrets and variables → Actions → Variables 页："
+            echo "  New repository variable"
+            echo "    Name:  GNAME_PRIVATE_REPO"
+            echo "    Value: 你的GitHub用户名/私库名（例如 zhangsan/gname-renew-private）"
+            exit 1
+          fi
+          echo "将拉取私库：${{ vars.GNAME_PRIVATE_REPO }}"
+
       - name: Checkout private script repo
         uses: actions/checkout@v4
         with:
-          repository: YOUR_USERNAME/gname-renew-private   # ← 改成你的私库（用户名/仓库名）
-          ref: main
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}        # PAT：需该私库 Contents 读写权限
+          repository: ${{ vars.GNAME_PRIVATE_REPO }}
+          ref: main                                          # 私库默认分支不是 main 就改这里
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}           # PAT：需对该私库有 Contents 读写权限
           path: script
 
       - name: Setup Python
