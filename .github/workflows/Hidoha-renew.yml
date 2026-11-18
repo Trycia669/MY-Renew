@@ -39,6 +39,7 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: 设置代理(可选)
+        working-directory: private-script
         env:
           PROXY_LINK: ${{ secrets.HIDOHA_PROXY_LINK }}
           PROXY_OUTBOUND: ${{ secrets.HIDOHA_PROXY_OUTBOUND }}
