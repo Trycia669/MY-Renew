@@ -16,7 +16,7 @@ permissions:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: 拉取本仓库(公开仓库,只有这份 workflow 文件)
         uses: actions/checkout@v4
@@ -43,18 +43,53 @@ jobs:
           PROXY_LINK: ${{ secrets.HIDOHA_PROXY_LINK }}
           PROXY_OUTBOUND: ${{ secrets.HIDOHA_PROXY_OUTBOUND }}
           PROXY_SIMPLE: ${{ secrets.HIDOHA_PROXY }}
-          HIDOHA_DEBUG: ${{ vars.HIDOHA_DEBUG }}
         run: |
-          if [ -n "$PROXY_LINK" ] || [ -n "$PROXY_OUTBOUND" ]; then
-            # 解析/下载/启动/自检任一步失败都会非零退出,这里就不会往下写 HIDOHA_PROXY
-            python3 private-script/setup_proxy.py
+          set -e
+
+          if [ -n "$PROXY_LINK" ]; then
+            echo "检测到 HIDOHA_PROXY_LINK,自动解析节点分享链接(支持 hysteria2/vless/tuic/trojan/ss)"
+            python3 convert_proxy_link.py "$PROXY_LINK" > outbound_raw.json
+            jq '. + {tag:"proxy"}' outbound_raw.json > outbound.json
+
+          elif [ -n "$PROXY_OUTBOUND" ]; then
+            echo "检测到 HIDOHA_PROXY_OUTBOUND,使用手写的 sing-box outbound JSON"
+            echo "$PROXY_OUTBOUND" | jq '. + {tag:"proxy"}' > outbound.json
+          fi
+
+          if [ -f outbound.json ]; then
+            echo "已生成 outbound 配置(不打印内容,避免在公开仓库日志里泄露密码/uuid 等信息)"
+
+            SB_VERSION="1.9.3"
+            curl -fsSL -o sing-box.tar.gz \
+              "https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-linux-amd64.tar.gz"
+            tar -xzf sing-box.tar.gz
+            SB_DIR=$(tar -tzf sing-box.tar.gz | head -1 | cut -f1 -d"/")
+            chmod +x "$SB_DIR/sing-box"
+
+            jq -n --slurpfile outbound outbound.json '{
+              log: {level: "warn"},
+              inbounds: [{type:"socks", listen:"127.0.0.1", listen_port:1080}],
+              outbounds: $outbound,
+              route: {final: "proxy"}
+            }' > singbox-config.json
+
+            nohup "./$SB_DIR/sing-box" run -c singbox-config.json > singbox.log 2>&1 &
+            SB_PID=$!
+            sleep 3
+            if kill -0 "$SB_PID" 2>/dev/null; then
+              echo "sing-box 已启动(pid=$SB_PID),本地 socks5 端口 1080 就绪"
+            else
+              echo "❌ sing-box 启动失败,请检查 outbound 配置是否正确(不打印日志详情,避免泄露服务器信息;需要排查的话去掉这里的保护自行临时开启)"
+              exit 1
+            fi
             echo "HIDOHA_PROXY=socks5://127.0.0.1:1080" >> "$GITHUB_ENV"
+
           elif [ -n "$PROXY_SIMPLE" ]; then
             echo "使用普通 http/https/socks5 代理"
             echo "HIDOHA_PROXY=$PROXY_SIMPLE" >> "$GITHUB_ENV"
+
           else
-            echo "⚠️ 未配置任何代理(HIDOHA_PROXY_LINK / HIDOHA_PROXY_OUTBOUND / HIDOHA_PROXY 都为空),将用 runner 自身出口 IP 直连"
-            echo "   机房 IP 直连很容易被站点 Cloudflare 验证拦截,建议在 Secrets 里配置 HIDOHA_PROXY_LINK"
+            echo "未配置代理,直接用 runner 自身出口 IP"
           fi
 
       - name: 运行续期脚本
@@ -75,9 +110,10 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           # 这个仓库本身就是公开仓库,固定用 public 模式,日志/通知自动脱敏
           MODE: public
+          HIDOHA_DEBUG: ${{ vars.HIDOHA_DEBUG }}
         run: python renew.py
 
-      - name: 上传调试截图(仅 HIDOHA_DEBUG=1 时;截图可能含账号信息,公开仓库任何人可见,排查完记得删 Artifact)
+      - name: 上传调试截图与HTML(仅 HIDOHA_DEBUG=1 时;截图/HTML 可能含账号信息,公开仓库任何人可见,排查完记得删 Artifact)
         if: failure() && vars.HIDOHA_DEBUG == '1'
         uses: actions/upload-artifact@v4
         with:
