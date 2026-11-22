@@ -1,0 +1,249 @@
+name: Auto Renew Bot-hosting (Private Code)
+
+# ============================================================================
+# 公开库只放这一个 yml —— 真正的续期脚本在私有库, 运行时用 PAT 拉下来执行。
+# 公开库哪怕被 fork / star / 逐行阅读, 也只能看到这份编排逻辑,
+# 拿不到你的私有库代码, 更拿不到账号(账号在 Actions Secrets 里, 加密不可读)。
+#
+# 内置 keepalive: 每次运行都会往「公开库」和「私有库」各提交一次时间戳,
+# 让两个仓库始终有 commit 活动, 避免 GitHub 因 60 天无活动而禁用 scheduled workflow。
+# ============================================================================
+
+on:
+  schedule:
+    - cron: '30 22 * * *' # 每天 UTC 22:30 (北京时间 06:30), 运行频率 < 60 天即可
+  workflow_dispatch:
+    inputs:
+      account_filter:
+        description: '只跑指定账号(序号如 1,3 或邮箱片段), 留空=全部'
+        required: false
+        default: ''
+      headless:
+        description: '无头模式(一般保持 false)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+      skip_renew:
+        description: '只更新时间戳, 不跑续期(测试 keepalive 用)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+concurrency:
+  group: bot-hosting-renew
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: write   # 公开库 keepalive 需要 push
+      actions: write    # 收尾步骤用 gh run delete 清理旧运行记录
+
+    steps:
+      # ---------------------------------------------------------------- 配置校验
+      - name: 🧾 校验配置
+        env:
+          PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          ACCOUNTS: ${{ secrets.ACCOUNTS }}
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          EMAIL_1: ${{ secrets.EMAIL_1 }}
+          PASSWORD_1: ${{ secrets.PASSWORD_1 }}
+        run: |
+          fail=0
+          if [ -z "$PRIVATE_REPO" ]; then
+            echo "::error::缺少 secret PRIVATE_REPO, 格式应为 用户名/私有库名 (例如 yourname/bot-hosting-renew)"
+            fail=1
+          fi
+          if [ -z "$GH_PAT" ]; then
+            echo "::error::缺少 secret GH_PAT, 需要能读写私有库的 Personal Access Token"
+            fail=1
+          fi
+          if [ -z "$ACCOUNTS" ] && { [ -z "$EMAIL" ] || [ -z "$PASSWORD" ]; } && { [ -z "$EMAIL_1" ] || [ -z "$PASSWORD_1" ]; }; then
+            echo "::error::缺少账号配置: 请设置 ACCOUNTS(多行/JSON) 或 EMAIL_1/PASSWORD_1 ... 或 EMAIL/PASSWORD"
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] && echo "✅ 配置校验通过 (私有库: $PRIVATE_REPO)"
+
+      # ------------------------------------------------------- 拉取私有库(脚本本体)
+      - name: 🔐 拉取私有库代码
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ secrets.PRIVATE_REPO }}
+          token: ${{ secrets.GH_PAT }}
+          ref: ${{ secrets.PRIVATE_REF || 'main' }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: 🧭 确认脚本已就位
+        run: |
+          echo "私有库内容:"
+          ls -la
+          test -f app.py || { echo "::error::私有库根目录缺少 app.py"; exit 1; }
+
+      # ------------------------------------------------------- keepalive: 私有库
+      - name: ⏱️ 私有库时间戳 (防 60 天休眠)
+        continue-on-error: true
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+          PRIVATE_REF: ${{ secrets.PRIVATE_REF || 'main' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -e
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          mkdir -p .github
+          {
+            echo "last_run: $ts"
+            echo "trigger : ${{ github.event_name }}"
+            echo "from    : ${{ github.repository }}"
+            echo "run     : $RUN_URL"
+          } > .github/last-run.txt
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${PRIVATE_REPO}.git"
+
+          if git add .github/last-run.txt && ! git diff --cached --quiet; then
+            git commit -m "chore(keepalive): $ts"
+            git push origin "HEAD:${PRIVATE_REF}" || git push origin "HEAD:main"
+            echo "✅ 私有库时间戳已提交: $ts"
+          else
+            echo "ℹ️ 私有库无变化, 跳过提交"
+          fi
+
+      # ------------------------------------------------------- keepalive: 公开库
+      - name: ⏱️ 公开库时间戳 (防 60 天休眠)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          tmp=$(mktemp -d)
+          # 用 GITHUB_TOKEN 推本仓库: 不会触发新的 workflow, 不会造成循环
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$tmp"
+          cd "$tmp"
+          branch=$(git rev-parse --abbrev-ref HEAD)
+          printf 'last_run: %s\ntrigger : %s\nrun     : %s\n' \
+            "$ts" "${{ github.event_name }}" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > .keepalive
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(keepalive): $ts"
+            git push origin "HEAD:${branch}"
+            echo "✅ 公开库时间戳已提交: $ts ($branch)"
+          else
+            echo "ℹ️ 公开库无变化, 跳过提交"
+          fi
+
+      # ------------------------------------------------------------- 运行环境准备
+      - name: ⚙ 设置 Python
+        if: ${{ github.event.inputs.skip_renew != 'true' }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: 🛠️ 安装系统依赖和 Python 依赖
+        if: ${{ github.event.inputs.skip_renew != 'true' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk jq wget
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install seleniumbase requests
+          fi
+          seleniumbase install chromedriver
+
+      - name: ⚙ 设置代理 (sing-box)
+        if: ${{ github.event.inputs.skip_renew != 'true' }}
+        continue-on-error: true
+        env:
+          NODE_LINK: ${{ secrets.NODE_LINK }}
+        run: |
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+
+      # ------------------------------------------------------------------- 执行
+      - name: 🚀 运行续期脚本 (多账号串行)
+        if: ${{ github.event.inputs.skip_renew != 'true' }}
+        env:
+          # 多账号方式一(推荐): 多行 EMAIL|PASSWORD[|PROXY][|TG_CHAT_ID], 或 JSON 数组
+          ACCOUNTS: ${{ secrets.ACCOUNTS }}
+          # 多账号方式二: 编号 secrets (最多 50 个)
+          EMAIL_1: ${{ secrets.EMAIL_1 }}
+          PASSWORD_1: ${{ secrets.PASSWORD_1 }}
+          PROXY_1: ${{ secrets.PROXY_1 }}
+          EMAIL_2: ${{ secrets.EMAIL_2 }}
+          PASSWORD_2: ${{ secrets.PASSWORD_2 }}
+          PROXY_2: ${{ secrets.PROXY_2 }}
+          EMAIL_3: ${{ secrets.EMAIL_3 }}
+          PASSWORD_3: ${{ secrets.PASSWORD_3 }}
+          PROXY_3: ${{ secrets.PROXY_3 }}
+          EMAIL_4: ${{ secrets.EMAIL_4 }}
+          PASSWORD_4: ${{ secrets.PASSWORD_4 }}
+          PROXY_4: ${{ secrets.PROXY_4 }}
+          EMAIL_5: ${{ secrets.EMAIL_5 }}
+          PASSWORD_5: ${{ secrets.PASSWORD_5 }}
+          PROXY_5: ${{ secrets.PROXY_5 }}
+          EMAIL_6: ${{ secrets.EMAIL_6 }}
+          PASSWORD_6: ${{ secrets.PASSWORD_6 }}
+          PROXY_6: ${{ secrets.PROXY_6 }}
+          EMAIL_7: ${{ secrets.EMAIL_7 }}
+          PASSWORD_7: ${{ secrets.PASSWORD_7 }}
+          PROXY_7: ${{ secrets.PROXY_7 }}
+          EMAIL_8: ${{ secrets.EMAIL_8 }}
+          PASSWORD_8: ${{ secrets.PASSWORD_8 }}
+          PROXY_8: ${{ secrets.PROXY_8 }}
+          EMAIL_9: ${{ secrets.EMAIL_9 }}
+          PASSWORD_9: ${{ secrets.PASSWORD_9 }}
+          PROXY_9: ${{ secrets.PROXY_9 }}
+          EMAIL_10: ${{ secrets.EMAIL_10 }}
+          PASSWORD_10: ${{ secrets.PASSWORD_10 }}
+          PROXY_10: ${{ secrets.PROXY_10 }}
+          # 单账号向下兼容
+          EMAIL: ${{ secrets.EMAIL }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          # 通知
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # 运行参数
+          IS_PROXY: ${{ secrets.IS_PROXY || 'false' }}
+          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          ACCOUNT_SLEEP: '15'
+          ACCOUNT_FILTER: ${{ github.event.inputs.account_filter }}
+          HEADLESS: ${{ github.event.inputs.headless || 'false' }}
+        run: |
+          xvfb-run --auto-servernum python3 app.py
+
+      # ------------------------------------------------------------------- 收尾
+      - name: 🧽 清理进程和临时文件
+        if: always()
+        run: |
+          pkill -f sing-box || true
+          pkill -f chromedriver || true
+          pkill -f chrome || true
+          pkill -f Xvfb || true
+          rm -f sing-box sing-box-config.json sing-box.log
+
+      - name: 🧹 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId' 2>/dev/null || true)
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              echo "删除运行记录: $run_id"
+              gh run delete $run_id || true
+            fi
+          done
