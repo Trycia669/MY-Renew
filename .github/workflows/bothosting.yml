@@ -169,7 +169,41 @@ jobs:
         env:
           NODE_LINK: ${{ secrets.NODE_LINK }}
         run: |
+          # ---- hy2 链接归一 ----
+          # setup_proxy.sh 把 obfs= 的值当 obfs 密码用, 而标准 hy2 链接是
+          #   ?obfs=salamander&obfs-password=XXX
+          # 这里统一改写成脚本认识的 ?obfs=XXX, 并去掉多余的 obfs=salamander
+          if [ -n "${NODE_LINK:-}" ]; then
+            case "$NODE_LINK" in
+              hy2://*|hysteria2://*)
+                _base="${NODE_LINK%%#*}"; _frag=""
+                [ "$_base" != "$NODE_LINK" ] && _frag="#${NODE_LINK#*#}"
+                _base=$(printf '%s' "$_base" | sed -E 's/([?&])obfs=salamander(&|$)/\1/; s/\?&/?/; s/[?&]$//')
+                _base=$(printf '%s' "$_base" | sed -E 's/([?&])obfs-password=([^&]*)/\1obfs=\2/')
+                NODE_LINK="${_base}${_frag}"
+                export NODE_LINK
+                echo "[INFO] 🔧 hy2 链接已归一: ${NODE_LINK%%@*}@***${NODE_LINK#*@}"
+                ;;
+            esac
+          fi
+          # ---- 执行并留下可诊断的结论行 ----
+          if [ -z "${NODE_LINK:-}" ]; then
+            echo "::warning::NODE_LINK 为空 (secret 未配置或名字不对), 本次直连"
+            echo "- 代理: ❌ 未配置 NODE_LINK, 直连" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "[INFO] NODE_LINK 协议前缀: ${NODE_LINK%%://*}"
+          set +e
           bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+          _proxy_rc=$?
+          set -e
+          if [ "$_proxy_rc" -ne 0 ]; then
+            echo "::error::代理启动失败 (exit $_proxy_rc), 后续将直连。看上面 sing-box 日志"
+            echo "- 代理: ❌ 启动失败 exit=$_proxy_rc, 直连" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "[INFO] 代理启动脚本返回 0"
+            echo "- 代理: ✅ 已启动" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # ------------------------------------------------------------------- 执行
       - name: 🚀 运行续期脚本 (多账号串行)
@@ -214,13 +248,33 @@ jobs:
           # 通知
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 运行参数
-          IS_PROXY: ${{ secrets.IS_PROXY || 'false' }}
-          PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
+          # 运行参数（代理不直接注入 IS_PROXY/PROXY_SERVER，避免覆盖上一步 sing-box 写入的值）
+          SECRET_IS_PROXY: ${{ secrets.IS_PROXY }}
+          SECRET_PROXY_SERVER: ${{ secrets.PROXY_SERVER }}
           ACCOUNT_SLEEP: '15'
           ACCOUNT_FILTER: ${{ github.event.inputs.account_filter }}
           HEADLESS: ${{ github.event.inputs.headless || 'false' }}
         run: |
+          # ---- 代理参数归一 ----
+          # 优先级: sing-box(上一写入 GITHUB_ENV) > secrets.IS_PROXY/PROXY_SERVER > 直连
+          if [ "${IS_PROXY:-false}" = "true" ] && [ -n "${PROXY_SERVER:-}" ]; then
+            echo "🔗 代理: sing-box -> $PROXY_SERVER"
+          else
+            IS_PROXY="${SECRET_IS_PROXY:-false}"
+            PROXY_SERVER="${SECRET_PROXY_SERVER:-}"
+            # 只给了 PROXY_SERVER 没写 IS_PROXY 时, 视为想用代理
+            [ -n "$PROXY_SERVER" ] && IS_PROXY="true"
+            export IS_PROXY PROXY_SERVER
+            if [ "$IS_PROXY" = "true" ]; then
+              if [ -z "$PROXY_SERVER" ]; then
+                echo "::warning::IS_PROXY=true 但 PROXY_SERVER 为空, app.py 将直连"
+              else
+                echo "🔗 代理: secret -> $PROXY_SERVER"
+              fi
+            else
+              echo "🍭 代理未启用 (未配置 NODE_LINK, IS_PROXY 非 true)"
+            fi
+          fi
           xvfb-run --auto-servernum python3 app.py
 
       # ------------------------------------------------------------------- 收尾
