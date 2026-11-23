@@ -47,7 +47,7 @@ jobs:
       # ---------------------------------------------------------------- 配置校验
       - name: 🧾 校验配置
         env:
-          PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+          PRIVATE_REPO: ${{ secrets.Bothosting_PRIVATE_REPO }}
           GH_PAT: ${{ secrets.GH_PAT }}
           ACCOUNTS: ${{ secrets.ACCOUNTS }}
           EMAIL: ${{ secrets.EMAIL }}
@@ -57,7 +57,7 @@ jobs:
         run: |
           fail=0
           if [ -z "$PRIVATE_REPO" ]; then
-            echo "::error::缺少 secret PRIVATE_REPO, 格式应为 用户名/私有库名 (例如 yourname/bot-hosting-renew)"
+            echo "::error::缺少 secret Bothosting_PRIVATE_REPO, 格式应为 用户名/私有库名 (例如 yourname/bot-hosting-renew)"
             fail=1
           fi
           if [ -z "$GH_PAT" ]; then
@@ -74,7 +74,7 @@ jobs:
       - name: 🔐 拉取私有库代码
         uses: actions/checkout@v6
         with:
-          repository: ${{ secrets.PRIVATE_REPO }}
+          repository: ${{ secrets.Bothosting_PRIVATE_REPO }}
           token: ${{ secrets.GH_PAT }}
           ref: ${{ secrets.PRIVATE_REF || 'main' }}
           persist-credentials: false
@@ -91,7 +91,7 @@ jobs:
         continue-on-error: true
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          PRIVATE_REPO: ${{ secrets.PRIVATE_REPO }}
+          PRIVATE_REPO: ${{ secrets.Bothosting_PRIVATE_REPO }}
           PRIVATE_REF: ${{ secrets.PRIVATE_REF || 'main' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
