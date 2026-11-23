@@ -47,7 +47,7 @@ jobs:
       # ---------------------------------------------------------------- 配置校验
       - name: 🧾 校验配置
         env:
-          PRIVATE_REPO: ${{ secrets.Bothosting_PRIVATE_REPO }}
+          hosting_PRIVATE_REPO: ${{ secrets.hosting_PRIVATE_REPO }}
           GH_PAT: ${{ secrets.GH_PAT }}
           ACCOUNTS: ${{ secrets.ACCOUNTS }}
           EMAIL: ${{ secrets.EMAIL }}
@@ -56,8 +56,8 @@ jobs:
           PASSWORD_1: ${{ secrets.PASSWORD_1 }}
         run: |
           fail=0
-          if [ -z "$PRIVATE_REPO" ]; then
-            echo "::error::缺少 secret Bothosting_PRIVATE_REPO, 格式应为 用户名/私有库名 (例如 yourname/bot-hosting-renew)"
+          if [ -z "$hosting_PRIVATE_REPO" ]; then
+            echo "::error::缺少 secret hosting_PRIVATE_REPO, 格式应为 用户名/私有库名 (例如 yourname/bot-hosting-renew)"
             fail=1
           fi
           if [ -z "$GH_PAT" ]; then
@@ -68,13 +68,13 @@ jobs:
             echo "::error::缺少账号配置: 请设置 ACCOUNTS(多行/JSON) 或 EMAIL_1/PASSWORD_1 ... 或 EMAIL/PASSWORD"
             fail=1
           fi
-          [ "$fail" -eq 0 ] && echo "✅ 配置校验通过 (私有库: $PRIVATE_REPO)"
+          [ "$fail" -eq 0 ] && echo "✅ 配置校验通过 (私有库: $hosting_PRIVATE_REPO)"
 
       # ------------------------------------------------------- 拉取私有库(脚本本体)
       - name: 🔐 拉取私有库代码
         uses: actions/checkout@v6
         with:
-          repository: ${{ secrets.Bothosting_PRIVATE_REPO }}
+          repository: ${{ secrets.hosting_PRIVATE_REPO }}
           token: ${{ secrets.GH_PAT }}
           ref: ${{ secrets.PRIVATE_REF || 'main' }}
           persist-credentials: false
@@ -91,7 +91,7 @@ jobs:
         continue-on-error: true
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-          PRIVATE_REPO: ${{ secrets.Bothosting_PRIVATE_REPO }}
+          hosting_PRIVATE_REPO: ${{ secrets.hosting_PRIVATE_REPO }}
           PRIVATE_REF: ${{ secrets.PRIVATE_REF || 'main' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -107,7 +107,7 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${PRIVATE_REPO}.git"
+          git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${hosting_PRIVATE_REPO}.git"
 
           if git add .github/last-run.txt && ! git diff --cached --quiet; then
             git commit -m "chore(keepalive): $ts"
